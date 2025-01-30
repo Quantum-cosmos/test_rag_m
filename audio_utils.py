@@ -11,9 +11,12 @@ class AudioHandler:
     def __init__(self, device=None):
         self.recognizer = sr.Recognizer()
         self.engine = pyttsx3.init()
-        
-        # Check available devices
-        self.device = device if device is not None else self.get_default_input_device()
+
+        try:
+            self.device = device if device is not None else self.get_default_input_device()
+        except OSError as e:
+            print(f"Error: {e}. PortAudio may be missing. Audio features will be disabled.")
+            self.device = None  # Disable audio recording
 
     def get_default_input_device(self):
         """Fetch and set the default input device"""
@@ -25,6 +28,7 @@ class AudioHandler:
         except Exception as e:
             print(f"Error getting default input device: {e}")
             return None
+
 
     def record_audio(self, duration=5, sample_rate=44100):
         """Record audio from the microphone"""
