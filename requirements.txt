@@ -1,0 +1,11 @@
+sentence-transformers
+faiss-cpu
+google-generativeai
+streamlit
+gtts
+SpeechRecognition
+pyttsx3
+soundfile
+sounddevice
+numpy
+python-dotenv
