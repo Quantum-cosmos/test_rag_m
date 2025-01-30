@@ -1,28 +1,78 @@
 import streamlit as st
 import os
+
+# Try to import audio dependencies, handle errors gracefully
+try:
+    import sounddevice as sd
+    from audio_utils import AudioHandler
+    audio_available = True
+except OSError:
+    audio_available = False
+    st.warning("Audio recording is disabled because the required dependencies are missing.")
+
+# Import MedicalRAGPipeline (Make sure this module exists)
 from medical_rag import MedicalRAGPipeline
-from audio_utils import AudioHandler
+
+# 🔐 Load API Key securely (Avoid hardcoding it in the script)
+API_KEY = os.getenv("GEMINI_API_KEY")  # Set this in your Streamlit Cloud secrets
 
 def initialize_session_state():
+    """Initializes all session state variables to avoid errors"""
+    
+    # Initialize audio handler
     if 'audio_handler' not in st.session_state:
-        st.session_state.audio_handler = AudioHandler()
-        
-        # Check if the audio device is available
-        if st.session_state.audio_handler.device is None:
-            st.warning("Audio recording is disabled because the required dependencies are missing.")
+        if audio_available:
+            st.session_state.audio_handler = AudioHandler()
+            if st.session_state.audio_handler.device is None:
+                st.warning("Audio recording is disabled due to missing dependencies.")
+        else:
+            st.session_state.audio_handler = None
 
+    # Initialize RAG pipeline
     if 'pipeline' not in st.session_state:
-        st.session_state.pipeline = MedicalRAGPipeline(
-            gemini_api_key="AIzaSyAulFzIkm9yvMawZBV5-HFoCEEu2BRzn7A"  # Replace with your API key
-        )
-        documents = st.session_state.pipeline.load_diseases_data("diseases.json")
-        st.session_state.intents_data = st.session_state.pipeline.load_intents_data("intents.json")
-        st.session_state.pipeline.create_index(documents)
+        if not API_KEY:
+            st.error("❌ API Key is missing! Set GEMINI_API_KEY in Streamlit secrets.")
+            return
 
-    if 'messages' not in st.session_state:
-        st.session_state.messages = []
-    if 'audio_responses' not in st.session_state:
-        st.session_state.audio_responses = {}
+        st.session_state.pipeline = MedicalRAGPipeline(gemini_api_key=API_KEY)
+        
+        # Load data for the model
+        try:
+            documents = st.session_state.pipeline.load_diseases_data("diseases.json")
+            st.session_state.intents_data = st.session_state.pipeline.load_intents_data("intents.json")
+            st.session_state.pipeline.create_index(documents)
+        except FileNotFoundError:
+            st.error("❌ Missing required data files (diseases.json, intents.json). Please upload them.")
+
+    # Initialize other session state variables
+    st.session_state.setdefault('messages', [])
+    st.session_state.setdefault('audio_responses', {})
+
+# Run session state initialization
+initialize_session_state()
+
+# 💬 Streamlit UI Components
+st.title("🩺 Medical RAG Chatbot")
+
+# Chat Input
+user_input = st.text_input("Ask a medical question:", key="user_input")
+
+# Handle User Query
+if user_input:
+    if 'pipeline' in st.session_state:
+        response = st.session_state.pipeline.query(user_input)
+        st.session_state.messages.append({"user": user_input, "bot": response})
+        st.write(f"**Chatbot:** {response}")
+    else:
+        st.error("Medical RAG pipeline is not initialized.")
+
+# Display Chat History
+if st.session_state.messages:
+    st.subheader("Chat History")
+    for chat in st.session_state.messages:
+        st.write(f"**You:** {chat['user']}")
+        st.write(f"**Bot:** {chat['bot']}")
+
 
 def main():
     st.set_page_config(page_title="Medical Chat Assistant", page_icon="🩺", layout="wide")
