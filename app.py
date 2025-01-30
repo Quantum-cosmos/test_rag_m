@@ -6,13 +6,19 @@ from audio_utils import AudioHandler
 def initialize_session_state():
     if 'audio_handler' not in st.session_state:
         st.session_state.audio_handler = AudioHandler()
+        
+        # Check if the audio device is available
+        if st.session_state.audio_handler.device is None:
+            st.warning("Audio recording is disabled because the required dependencies are missing.")
+
     if 'pipeline' not in st.session_state:
         st.session_state.pipeline = MedicalRAGPipeline(
-            gemini_api_key="YOUR_GEMINI_API_KEY_HERE"  # Replace with your API key
+            gemini_api_key="AIzaSyAulFzIkm9yvMawZBV5-HFoCEEu2BRzn7A"  # Replace with your API key
         )
         documents = st.session_state.pipeline.load_diseases_data("diseases.json")
         st.session_state.intents_data = st.session_state.pipeline.load_intents_data("intents.json")
         st.session_state.pipeline.create_index(documents)
+
     if 'messages' not in st.session_state:
         st.session_state.messages = []
     if 'audio_responses' not in st.session_state:
