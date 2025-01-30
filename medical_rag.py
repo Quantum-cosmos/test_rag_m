@@ -2,12 +2,13 @@ import json
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import faiss
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional, Any
 import logging
 import google.generativeai as genai
 from dataclasses import dataclass
 import re
 import os
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,85 +17,128 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Document:
     content: str
-    metadata: Dict
+    metadata: Dict[str, Any]
 
 class MedicalRAGPipeline:
-    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', gemini_api_key: str = None):
+    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', gemini_api_key: Optional[str] = None):
         """
-        Initialize the Medical RAG Pipeline
-        Args:
-            model_name: Name of the sentence transformer model
-            gemini_api_key: API key for Gemini
-        """
-        self.encoder = SentenceTransformer(model_name)
-        self.index = None
-        self.documents = []
-        self.dimension = 384  # Default dimension for all-MiniLM-L6-v2
-        key="AIzaSyAulFzIkm9yvMawZBV5-HFoCEEu2BRzn7A"
-        gemini_api_key=key
-        if gemini_api_key:
-            genai.configure(api_key=gemini_api_key)
-            self.model = genai.GenerativeModel('gemini-pro')
-        
-        # Add exit patterns
-        self.exit_patterns = {
-            'quit', 'exit', 'bye', 'goodbye', 'terminate', 'end', 'sign off',
-            'terminate the call', 'sign off', 'end call'
-        }
-        
-        # Medical disclaimer
-        self.medical_disclaimer = ("\nDisclaimer: This information is for educational purposes only. "
-                                 "Please consult a healthcare professional for medical advice, diagnosis, or treatment.")
-
-    def load_diseases_data(self, diseases_path: str) -> List[Document]:
-        """
-        Load and process diseases data from JSON file
+        Initialize the Medical RAG Pipeline with improved error handling
         """
         try:
-            with open(diseases_path, 'r') as f:
+            self.encoder = SentenceTransformer(model_name)
+            self.index = None
+            self.documents = []
+            self.dimension = 384  # Default dimension for all-MiniLM-L6-v2
+            
+            # Initialize Gemini
+            if not gemini_api_key:
+                gemini_api_key = os.getenv('GEMINI_API_KEY')
+            
+            if not gemini_api_key:
+                raise ValueError("Gemini API key not provided")
+                
+            genai.configure(api_key=gemini_api_key)
+            self.model = genai.GenerativeModel('gemini-pro')
+            
+            # Add exit patterns
+            self.exit_patterns = {
+                'quit', 'exit', 'bye', 'goodbye', 'terminate', 'end', 'sign off',
+                'terminate the call', 'sign off', 'end call'
+            }
+            
+            # Medical disclaimer
+            self.medical_disclaimer = (
+                "\nDisclaimer: This information is for educational purposes only. "
+                "Please consult a healthcare professional for medical advice, diagnosis, or treatment."
+            )
+            
+            logger.info("Successfully initialized Medical RAG Pipeline")
+            
+        except Exception as e:
+            logger.error(f"Error initializing Medical RAG Pipeline: {e}")
+            raise
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def load_diseases_data(self, diseases_path: str) -> List[Document]:
+        """
+        Load and process diseases data with retry mechanism
+        """
+        try:
+            if not os.path.exists(diseases_path):
+                raise FileNotFoundError(f"Diseases data file not found: {diseases_path}")
+                
+            with open(diseases_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             documents = []
-            for disease in data['diseases']:
-                # Create comprehensive document for each disease
-                content = f"{disease.get('tag', '')}: {disease.get(disease['tag'], '')}\n"
-                content += f"Symptoms: {disease.get('symptoms', '')}\n"
-                content += f"Treatment: {disease.get('treatment', '')}\n"
-                if 'types' in disease:
-                    content += f"Types: {disease['types']}\n"
-                if 'prevention' in disease:
-                    content += f"Prevention: {disease['prevention']}"
-                
-                doc = Document(
-                    content=content,
-                    metadata={'tag': disease['tag']}
-                )
-                documents.append(doc)
+            for disease in data.get('diseases', []):
+                try:
+                    # Create comprehensive document for each disease
+                    content_parts = []
+                    
+                    if 'tag' in disease:
+                        content_parts.append(f"{disease['tag']}: {disease.get(disease['tag'], '')}")
+                    if 'symptoms' in disease:
+                        content_parts.append(f"Symptoms: {disease['symptoms']}")
+                    if 'treatment' in disease:
+                        content_parts.append(f"Treatment: {disease['treatment']}")
+                    if 'types' in disease:
+                        content_parts.append(f"Types: {disease['types']}")
+                    if 'prevention' in disease:
+                        content_parts.append(f"Prevention: {disease['prevention']}")
+                    
+                    content = "\n".join(content_parts)
+                    
+                    doc = Document(
+                        content=content,
+                        metadata={'tag': disease.get('tag', 'unknown')}
+                    )
+                    documents.append(doc)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing disease entry: {e}")
+                    continue
             
-            logger.info(f"Loaded {len(documents)} disease documents")
+            if not documents:
+                raise ValueError("No valid disease documents were created")
+                
+            logger.info(f"Successfully loaded {len(documents)} disease documents")
             return documents
+            
         except Exception as e:
             logger.error(f"Error loading diseases data: {e}")
             raise
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def load_intents_data(self, intents_path: str) -> Dict:
         """
-        Load intents data for response generation
+        Load intents data with retry mechanism
         """
         try:
-            with open(intents_path, 'r') as f:
+            if not os.path.exists(intents_path):
+                raise FileNotFoundError(f"Intents data file not found: {intents_path}")
+                
+            with open(intents_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            logger.info(f"Loaded intents data with {len(data['intents'])} intents")
+            
+            if 'intents' not in data or not data['intents']:
+                raise ValueError("No intents found in the data file")
+                
+            logger.info(f"Successfully loaded intents data with {len(data['intents'])} intents")
             return data
+            
         except Exception as e:
             logger.error(f"Error loading intents data: {e}")
             raise
 
-    def create_index(self, documents: List[Document]):
+    def create_index(self, documents: List[Document]) -> None:
         """
-        Create FAISS index from documents
+        Create FAISS index with error handling
         """
         try:
+            if not documents:
+                raise ValueError("No documents provided for indexing")
+                
             # Convert documents to embeddings
             texts = [doc.content for doc in documents]
             embeddings = self.encoder.encode(texts)
@@ -104,43 +148,66 @@ class MedicalRAGPipeline:
             self.index.add(np.array(embeddings).astype('float32'))
             self.documents = documents
             
-            logger.info(f"Created FAISS index with {len(documents)} documents")
+            logger.info(f"Successfully created FAISS index with {len(documents)} documents")
+            
         except Exception as e:
             logger.error(f"Error creating index: {e}")
             raise
 
     def normalize_query(self, query: str) -> str:
         """
-        Normalize the query by removing special characters and converting to lowercase
+        Normalize query with improved handling
         """
-        # Remove special characters and convert to lowercase
-        query = re.sub(r'[^\w\s]', '', query.lower())
-        # Handle common misspellings
-        misspellings = {
-            'canser': 'cancer',
-            'diabetis': 'diabetes',
-            'artritis': 'arthritis',
-            'highbloodpressure': 'hypertension',
-            'asma': 'asthma',
-            'hart': 'heart',
-            'stroke': 'stroke',
-            'alzheimers': 'alzheimer',
-            'highblood': 'hypertension'
-        }
-        return misspellings.get(query, query)
+        try:
+            # Remove special characters and convert to lowercase
+            query = re.sub(r'[^\w\s]', '', query.lower())
+            
+            # Handle common medical misspellings
+            misspellings = {
+                'canser': 'cancer',
+                'diabetis': 'diabetes',
+                'artritis': 'arthritis',
+                'highbloodpressure': 'hypertension',
+                'asma': 'asthma',
+                'hart': 'heart',
+                'stroke': 'stroke',
+                'alzheimers': 'alzheimer',
+                'highblood': 'hypertension',
+                'colesterol': 'cholesterol',
+                'anxiety': 'anxiety',
+                'depresion': 'depression',
+                'migrane': 'migraine'
+            }
+            
+            # Split query into words and correct each word if it's misspelled
+            words = query.split()
+            corrected_words = [misspellings.get(word, word) for word in words]
+            
+            return ' '.join(corrected_words)
+            
+        except Exception as e:
+            logger.error(f"Error normalizing query: {e}")
+            return query
 
     def is_exit_request(self, query: str) -> bool:
         """
-        Check if the query is an exit request
+        Check if query is an exit request
         """
-        normalized_query = query.lower().strip()
-        return any(exit_pattern in normalized_query for exit_pattern in self.exit_patterns)
+        try:
+            normalized_query = query.lower().strip()
+            return any(exit_pattern in normalized_query for exit_pattern in self.exit_patterns)
+        except Exception as e:
+            logger.error(f"Error checking exit request: {e}")
+            return False
 
     def search(self, query: str, k: int = 3) -> List[Tuple[Document, float]]:
         """
-        Search the index for similar documents
+        Search the index with improved error handling
         """
         try:
+            if not self.index:
+                raise ValueError("Index not initialized")
+                
             # Encode query
             query_embedding = self.encoder.encode([query])
             
@@ -152,19 +219,21 @@ class MedicalRAGPipeline:
             # Return documents and scores
             results = []
             for idx, distance in zip(indices[0], distances[0]):
-                results.append((self.documents[idx], float(distance)))
+                if 0 <= idx < len(self.documents):
+                    results.append((self.documents[idx], float(distance)))
+                else:
+                    logger.warning(f"Invalid document index: {idx}")
             
             return results
+            
         except Exception as e:
             logger.error(f"Error during search: {e}")
             raise
 
-
-    
-
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=4))
     def generate_response(self, query: str, intents_data: Dict) -> str:
         """
-        Generate improved response using RAG and intents data
+        Generate response with retry mechanism and improved error handling
         """
         try:
             # Check for exit request
@@ -182,12 +251,12 @@ class MedicalRAGPipeline:
             
             # Find matching intent
             matching_intent = None
-            for intent in intents_data['intents']:
-                if any(pattern.lower() in normalized_query for pattern in intent['patterns']):
+            for intent in intents_data.get('intents', []):
+                if any(pattern.lower() in normalized_query for pattern in intent.get('patterns', [])):
                     matching_intent = intent
                     break
             
-            # Generate prompt with improved instructions
+            # Generate prompt
             prompt = f"""As a medical assistant, provide a clear and concise answer to the following question using the provided context. 
             Focus on accuracy and avoid repetition.
 
@@ -208,10 +277,9 @@ class MedicalRAGPipeline:
             response = self.model.generate_content(prompt)
             final_response = response.text.strip()
             
-            # If we have a matching intent, enhance with intent response
-            if matching_intent:
+            # Add intent response if available
+            if matching_intent and 'responses' in matching_intent:
                 intent_response = matching_intent['responses'][0]
-                # Combine responses while avoiding repetition
                 if intent_response not in final_response:
                     final_response = f"{final_response}\n\n{intent_response}"
             
@@ -225,22 +293,25 @@ class MedicalRAGPipeline:
             return ("I apologize, but I'm having trouble generating a response. "
                    "Please try again or consult a healthcare professional for medical advice.")
 
-
-    def process_audio_query(self, audio_handler, audio_file, intents_data):
+    def process_audio_query(self, audio_handler: Any, audio_file: str, intents_data: Dict) -> Optional[Dict]:
         """
-        Process a query from an audio file
+        Process audio query with improved error handling
         """
         try:
             # Transcribe audio to text
             query = audio_handler.transcribe_audio(audio_file)
             if not query:
-                return None, "Could not transcribe audio"
+                logger.error("Could not transcribe audio")
+                return None
 
             # Generate text response
             text_response = self.generate_response(query, intents_data)
 
             # Convert response to audio
             audio_response = audio_handler.text_to_speech(text_response)
+            if not audio_response:
+                logger.error("Could not convert response to speech")
+                return None
 
             return {
                 'query': query,
