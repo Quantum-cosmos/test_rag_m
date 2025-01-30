@@ -9,6 +9,4 @@ streamlit
 gtts
 pyttsx3
 python-dotenv
-portaudio19-dev
-sounddevice
 pyaudio
