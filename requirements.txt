@@ -9,4 +9,6 @@ streamlit
 gtts
 pyttsx3
 python-dotenv
-pyaudio
+gtts
+google-cloud-speech
+numpy
