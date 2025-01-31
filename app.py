@@ -92,7 +92,7 @@ class MedicalAssistantApp:
         if 'pipeline' not in st.session_state:
             try:
                 st.session_state.pipeline = MedicalRAGPipeline(
-                    gemini_api_key="AIzaSyAulFzIkm9yvMawZBV5-HFoCEEu2BRzn7A"
+                    gemini_api_key=os.getenv("GEMINI_API_KEY")  # you can put thekey as well
                 )
                 # Load data and create index
                 documents = st.session_state.pipeline.load_diseases_data("diseases.json")
